@@ -43,11 +43,13 @@ def create_dataloader(dataset, rank, world_size, batch_size):
 
 @dataclass
 class MyConfig:
+    name: str
     seed: int = 42
     dist_timeout: Union[int, float] = 600.0
     global_train_batch_size: int = 256
     device_train_microbatch_size: int = 16 # the batch size for each GPU device
 
+    
    
 
     def dist_init(self):
@@ -55,6 +57,8 @@ class MyConfig:
         self.node_rank = dist.get_node_rank()
         self.global_rank = dist.get_global_rank()
         self.local_rank = dist.get_local_rank()
+        self.experiment_name: str = f"/Users/yu.gong@databricks.com/{self.name}"
+    
 
         self.device_train_batch_size = self.global_train_batch_size // self.world_size
         self.device_train_grad_accum = math.ceil(self.device_train_batch_size /
@@ -112,7 +116,7 @@ def main(cfg: MyConfig) -> Trainer:
           train_dataset = datasets.CIFAR10(data_directory, train=True, download=True, transform=cifar10_transforms)
           test_dataset = datasets.CIFAR10(data_directory, train=False, download=True, transform=cifar10_transforms)
      else:
-          wait_for_file(os.path.join(data_directory, "cifar-10-python.tar.gz"))
+          wait_for_file(os.path.join(data_directory, "cifar-10-batches-py/batches.meta"))
           train_dataset = datasets.CIFAR10(data_directory, train=True, download=False, transform=cifar10_transforms)
           test_dataset = datasets.CIFAR10(data_directory, train=False, download=False, transform=cifar10_transforms)
      
@@ -142,12 +146,12 @@ def main(cfg: MyConfig) -> Trainer:
             # Adds mosaicml logger to composer if the run was sent from Mosaic platform, access token is set, and mosaic logger wasn't previously added
             mosaicml_logger = MosaicMLLogger()
             loggers.append(mosaicml_logger)
-    #  databricks_logger = MLFlowLogger.MLFlowLogger(experiment_name='/Users/yu.gong@databricks.com/custom1', 
-    #                                                tracking_uri='databricks', synchronous=False, log_system_metrics=True)
-    #  loggers.append(databricks_logger)
+     databricks_logger = MLFlowLogger.MLFlowLogger(experiment_name=cfg.experiment_name, 
+                                                   tracking_uri='databricks', synchronous=False, log_system_metrics=True)
+     loggers.append(databricks_logger)
     
   
-     train_epochs = "3ep" # Train for 3 epochs because we're assuming Colab environment and hardware
+     train_epochs = "1ep" # Train for 3 epochs because we're assuming Colab environment and hardware
      device = "gpu" if torch.cuda.is_available() else "cpu" # select the device
 
      trainer = composer.trainer.Trainer(
@@ -157,7 +161,6 @@ def main(cfg: MyConfig) -> Trainer:
         max_duration=train_epochs,
         optimizers=optimizer,
         schedulers=lr_scheduler,
-        max_duration="1ep",
         device=device,
         loggers=loggers,
     )
