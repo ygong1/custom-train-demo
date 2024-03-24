@@ -35,10 +35,10 @@ log = logging.getLogger(__name__)
 
 def create_dataloader(dataset, rank, world_size, batch_size):
     sampler = torch.utils.data.distributed.DistributedSampler(
-        dataset, num_replicas=world_size, rank=rank, shuffle=True
+        dataset, num_replicas=world_size, rank=rank, # shuffle=True
     )
     return torch.utils.data.DataLoader(
-        dataset, batch_size=batch_size, sampler=sampler, num_workers=1
+        dataset, batch_size=batch_size, sampler=sampler, num_workers=1, drop_last=True
     )
 
 @dataclass
@@ -54,11 +54,28 @@ class MyConfig:
         self.world_size = dist.get_world_size()
         self.node_rank = dist.get_node_rank()
         self.global_rank = dist.get_global_rank()
+        self.local_rank = dist.get_local_rank()
 
         self.device_train_batch_size = self.global_train_batch_size // self.world_size
         self.device_train_grad_accum = math.ceil(self.device_train_batch_size /
                                               self.device_train_microbatch_size)
 
+def wait_for_file(filename, timeout=60):
+    """
+    Wait for a file to exist.
+    
+    Parameters:
+    - filename: Path to the file to wait for.
+    - timeout: How long to wait for the file, in seconds.
+    """
+    start_time = time.time()
+    while not os.path.exists(filename):
+        log.info(f"Waiting for file {filename} to appear.")
+        time.sleep(3)  # Sleep for a short time to wait before checking again.
+        if time.time() - start_time > timeout:
+            raise TimeoutError(f"File {filename} did not appear within {timeout} seconds.")
+    time.sleep(3)  # Sleep for a short time to ensure the file is ready.
+    log.info(f"File {filename} is ready.")
 
 
 def main(cfg: MyConfig) -> Trainer:
@@ -88,11 +105,17 @@ def main(cfg: MyConfig) -> Trainer:
      # Normalization constants
      mean = (0.507, 0.487, 0.441)
      std = (0.267, 0.256, 0.276)
-
-    
      cifar10_transforms = transforms.Compose([transforms.ToTensor(), transforms.Normalize(mean, std)])
-     train_dataset = datasets.CIFAR10(data_directory, train=True, download=True, transform=cifar10_transforms)
-     test_dataset = datasets.CIFAR10(data_directory, train=False, download=True, transform=cifar10_transforms)
+
+     if cfg.local_rank == 0:
+          logging.info("Downloading CIFAR-10 dataset")
+          train_dataset = datasets.CIFAR10(data_directory, train=True, download=True, transform=cifar10_transforms)
+          test_dataset = datasets.CIFAR10(data_directory, train=False, download=True, transform=cifar10_transforms)
+     else:
+          wait_for_file(os.path.join(data_directory, "cifar-10-python.tar.gz"))
+          train_dataset = datasets.CIFAR10(data_directory, train=True, download=False, transform=cifar10_transforms)
+          test_dataset = datasets.CIFAR10(data_directory, train=False, download=False, transform=cifar10_transforms)
+     
 
      # Our train and test dataloaders are PyTorch DataLoader objects!
      train_dataloader = create_dataloader(train_dataset, cfg.global_rank, cfg.world_size, cfg.global_train_batch_size)
@@ -119,9 +142,9 @@ def main(cfg: MyConfig) -> Trainer:
             # Adds mosaicml logger to composer if the run was sent from Mosaic platform, access token is set, and mosaic logger wasn't previously added
             mosaicml_logger = MosaicMLLogger()
             loggers.append(mosaicml_logger)
-     databricks_logger = MLFlowLogger.MLFlowLogger(experiment_name='/Users/yu.gong@databricks.com/custom1', 
-                                                   tracking_uri='databricks', synchronous=False, log_system_metrics=True)
-     loggers.append(databricks_logger)
+    #  databricks_logger = MLFlowLogger.MLFlowLogger(experiment_name='/Users/yu.gong@databricks.com/custom1', 
+    #                                                tracking_uri='databricks', synchronous=False, log_system_metrics=True)
+    #  loggers.append(databricks_logger)
     
   
      train_epochs = "3ep" # Train for 3 epochs because we're assuming Colab environment and hardware
@@ -134,15 +157,16 @@ def main(cfg: MyConfig) -> Trainer:
         max_duration=train_epochs,
         optimizers=optimizer,
         schedulers=lr_scheduler,
+        max_duration="1ep",
         device=device,
         loggers=loggers,
     )
 
-
      start_time = time.perf_counter()
+     log.info(f"Starting training: start_time={start_time}")
      trainer.fit() # <-- Your training loop in action!
      end_time = time.perf_counter()
-     print(f"It took {end_time - start_time:0.4f} seconds to train")
+     log.info(f"It took {end_time - start_time:0.4f} seconds to train")
 
 import sys
 import json
