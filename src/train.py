@@ -1,3 +1,5 @@
+#! python
+
 import time
 import time
 import warnings
@@ -13,7 +15,7 @@ from composer.utils import dist, get_device, reproducibility
 import torch
 import torch.utils.data
 from dataclasses import dataclass
-
+import os
 
 import composer
 import matplotlib.pyplot as plt
@@ -23,19 +25,21 @@ from torchvision import datasets, transforms
 from composer.loggers import InMemoryLogger
 from models.model import ResNetCIFAR
 from composer.models import ComposerClassifier
+from llmfoundry.composerpatch import MLFlowLogger
+import logging
+
+log = logging.getLogger(__name__)
 
 
 # examples comes from https://docs.mosaicml.com/projects/composer/en/latest/examples/getting_started.html
 
 def create_dataloader(dataset, rank, world_size, batch_size):
-    # TODO: enable DistributedSampler for distributed training
-    # sampler = torch.utils.data.distributed.DistributedSampler(
-    #     dataset, num_replicas=world_size, rank=rank, shuffle=True
-    # )
-    # return torch.utils.data.DataLoader(
-    #     dataset, batch_size=batch_size, sampler=sampler, num_workers=2
-    # )
-    return torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=8)
+    sampler = torch.utils.data.distributed.DistributedSampler(
+        dataset, num_replicas=world_size, rank=rank, shuffle=True
+    )
+    return torch.utils.data.DataLoader(
+        dataset, batch_size=batch_size, sampler=sampler, num_workers=1
+    )
 
 @dataclass
 class MyConfig:
@@ -44,13 +48,16 @@ class MyConfig:
     global_train_batch_size: int = 256
     device_train_microbatch_size: int = 16 # the batch size for each GPU device
 
+   
 
-    # derive the values
-    device_train_batch_size = global_train_batch_size // dist.get_world_size()
-    device_train_grad_accum = math.ceil(device_train_batch_size /
-                                      device_train_microbatch_size)
-    device_eval_batch_size = device_train_microbatch_size
+    def dist_init(self):
+        self.world_size = dist.get_world_size()
+        self.node_rank = dist.get_node_rank()
+        self.global_rank = dist.get_global_rank()
 
+        self.device_train_batch_size = self.global_train_batch_size // self.world_size
+        self.device_train_grad_accum = math.ceil(self.device_train_batch_size /
+                                              self.device_train_microbatch_size)
 
 
 
@@ -61,6 +68,20 @@ def main(cfg: MyConfig) -> Trainer:
      # e.g. torch.distributed.init_process_group and the envrionment variables(e.g NODE_RANK,
      # LOCAL_RANK, WORLD_SIZE, etc)
      dist.initialize_dist(get_device(None), timeout=cfg.dist_timeout)
+
+     cfg.dist_init()
+
+
+     logging.basicConfig(
+            # Example of format string
+            # 2022-06-29 11:22:26,152: rank0[822018][MainThread]: INFO: Message here
+            format=
+            f'%(asctime)s: rank{dist.get_global_rank()}[%(process)d][%(threadName)s]: %(levelname)s: %(name)s: %(message)s'
+        )
+     log.setLevel("INFO")
+     from dataclasses import asdict
+     log.info(f"config: {json.dumps(asdict(cfg))}")
+     log.info(f"world_size: {cfg.world_size}, global_rank: {cfg.global_rank}, global_train_batch_size: {cfg.global_train_batch_size}")
 
      data_directory = "/tmp/data"
 
@@ -74,9 +95,8 @@ def main(cfg: MyConfig) -> Trainer:
      test_dataset = datasets.CIFAR10(data_directory, train=False, download=True, transform=cifar10_transforms)
 
      # Our train and test dataloaders are PyTorch DataLoader objects!
-     # TODO: adjust in distributed setting
-     train_dataloader = create_dataloader(train_dataset, 0, 1, cfg.device_train_batch_size)
-     test_dataloader = create_dataloader(test_dataset, 0, 1, cfg.device_train_batch_size)
+     train_dataloader = create_dataloader(train_dataset, cfg.global_rank, cfg.world_size, cfg.global_train_batch_size)
+     test_dataloader = create_dataloader(test_dataset, cfg.global_rank, cfg.world_size, cfg.global_train_batch_size)
      
 
      model = ComposerClassifier(module=ResNetCIFAR(), num_classes=10)
@@ -93,8 +113,17 @@ def main(cfg: MyConfig) -> Trainer:
         alpha_i=1.0, # Flat LR schedule achieved by having alpha_i == alpha_f
         alpha_f=1.0)
 
-     logger_for_baseline = InMemoryLogger()
-
+     loggers = [InMemoryLogger()]
+     if os.environ.get(MOSAICML_PLATFORM_ENV_VAR, 'false').lower(
+        ) == 'true' and os.environ.get(MOSAICML_ACCESS_TOKEN_ENV_VAR):
+            # Adds mosaicml logger to composer if the run was sent from Mosaic platform, access token is set, and mosaic logger wasn't previously added
+            mosaicml_logger = MosaicMLLogger()
+            loggers.append(mosaicml_logger)
+     databricks_logger = MLFlowLogger.MLFlowLogger(experiment_name='/Users/yu.gong@databricks.com/custom1', 
+                                                   tracking_uri='databricks', synchronous=False, log_system_metrics=True)
+     loggers.append(databricks_logger)
+    
+  
      train_epochs = "3ep" # Train for 3 epochs because we're assuming Colab environment and hardware
      device = "gpu" if torch.cuda.is_available() else "cpu" # select the device
 
@@ -106,7 +135,7 @@ def main(cfg: MyConfig) -> Trainer:
         optimizers=optimizer,
         schedulers=lr_scheduler,
         device=device,
-        loggers=logger_for_baseline,
+        loggers=loggers,
     )
 
 
@@ -115,8 +144,10 @@ def main(cfg: MyConfig) -> Trainer:
      end_time = time.perf_counter()
      print(f"It took {end_time - start_time:0.4f} seconds to train")
 
+import sys
+import json
 
 if __name__ == '__main__':
-    # TODO: figure out how to pass in the config
-    cfg = MyConfig(global_train_batch_size=1024)
+    json_str = sys.argv[1]
+    cfg = MyConfig(**json.loads(json_str))
     main(cfg)
