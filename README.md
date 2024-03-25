@@ -1,3 +1,3 @@
 # custom-train-demo
 
-more testing
+Demo repo for interactive development on for arbitrary code training
