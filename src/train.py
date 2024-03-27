@@ -8,7 +8,8 @@ from typing import Any, Dict, List, Optional, Union
 import torch
 from composer import Trainer
 from composer.core.callback import Callback
-from composer.loggers import MosaicMLLogger, MLFlowLogger
+from llmfoundry.composerpatch import MLFlowLogger
+from composer.loggers import MosaicMLLogger
 from composer.loggers.mosaicml_logger import (MOSAICML_ACCESS_TOKEN_ENV_VAR,
                                               MOSAICML_PLATFORM_ENV_VAR)
 from composer.utils import dist, get_device, reproducibility
@@ -25,7 +26,6 @@ from torchvision import datasets, transforms
 from composer.loggers import InMemoryLogger
 from models.model import ResNetCIFAR
 from composer.models import ComposerClassifier
-from llmfoundry.composerpatch import MLFlowLogger
 import logging
 
 log = logging.getLogger(__name__)
