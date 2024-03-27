@@ -1,7 +1,6 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from composer.models import ComposerClassifier
 
 class Block(nn.Module):
     """A ResNet block."""

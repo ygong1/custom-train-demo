@@ -49,9 +49,6 @@ class MyConfig:
     global_train_batch_size: int = 256
     device_train_microbatch_size: int = 16 # the batch size for each GPU device
 
-    
-   
-
     def dist_init(self):
         self.world_size = dist.get_world_size()
         self.node_rank = dist.get_node_rank()

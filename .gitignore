@@ -1,3 +1,5 @@
 notebook/data/
 notebook/playground/
 **/__pycache__/
+.vscode/
+.databricks
