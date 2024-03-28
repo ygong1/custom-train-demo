@@ -19,14 +19,13 @@ from dataclasses import dataclass
 import os
 
 import composer
-import matplotlib.pyplot as plt
-import math
 
 from torchvision import datasets, transforms
 from composer.loggers import InMemoryLogger
 from models.model import ResNetCIFAR
 from composer.models import ComposerClassifier
 import logging
+
 
 log = logging.getLogger(__name__)
 
@@ -41,14 +40,14 @@ def create_dataloader(dataset, rank, world_size, batch_size):
         dataset, batch_size=batch_size, sampler=sampler, num_workers=1, drop_last=True
     )
 
-@dataclass
 class MyConfig:
-    name: str
-    seed: int = 42
-    dist_timeout: Union[int, float] = 600.0
-    global_train_batch_size: int = 256
-    device_train_microbatch_size: int = 16 # the batch size for each GPU device
-
+    def __init__(self, name: str, device_train_microbatch_size: int, seed: int = 42, loggers: List[any] = None) -> None:
+        self.name = name
+        self.device_train_microbatch_size = device_train_microbatch_size
+        self.seed = seed
+        self.loggers = loggers
+        self.dist_timeout = 600.0
+    
     def dist_init(self):
         self.world_size = dist.get_world_size()
         self.node_rank = dist.get_node_rank()
@@ -56,10 +55,6 @@ class MyConfig:
         self.local_rank = dist.get_local_rank()
         self.experiment_name: str = f"/Users/yu.gong@databricks.com/{self.name}"
     
-
-        self.device_train_batch_size = self.global_train_batch_size // self.world_size
-        self.device_train_grad_accum = math.ceil(self.device_train_batch_size /
-                                              self.device_train_microbatch_size)
 
 def wait_for_file(filename, timeout=60):
     """
@@ -91,15 +86,9 @@ def main(cfg: MyConfig) -> Trainer:
 
 
      logging.basicConfig(
-            # Example of format string
-            # 2022-06-29 11:22:26,152: rank0[822018][MainThread]: INFO: Message here
-            format=
-            f'%(asctime)s: rank{dist.get_global_rank()}[%(process)d][%(threadName)s]: %(levelname)s: %(name)s: %(message)s'
-        )
+            format=f'%(asctime)s: rank{dist.get_global_rank()}[%(process)d][%(threadName)s]: %(levelname)s: %(name)s: %(message)s')
      log.setLevel("INFO")
-     from dataclasses import asdict
-     log.info(f"config: {json.dumps(asdict(cfg))}")
-     log.info(f"world_size: {cfg.world_size}, global_rank: {cfg.global_rank}, global_train_batch_size: {cfg.global_train_batch_size}")
+     log.info(f"world_size: {cfg.world_size}, global_rank: {cfg.global_rank}, global_train_batch_size: {cfg.device_train_microbatch_size}")
 
      data_directory = "/tmp/data"
 
@@ -119,8 +108,9 @@ def main(cfg: MyConfig) -> Trainer:
      
 
      # Our train and test dataloaders are PyTorch DataLoader objects!
-     train_dataloader = create_dataloader(train_dataset, cfg.global_rank, cfg.world_size, cfg.global_train_batch_size)
-     test_dataloader = create_dataloader(test_dataset, cfg.global_rank, cfg.world_size, cfg.global_train_batch_size)
+     train_dataloader = create_dataloader(train_dataset, cfg.global_rank, cfg.world_size, cfg.device_train_microbatch_size)
+     # test dataloader is not used in this example, need to DEBUG why caused sigkill
+    #  test_dataloader = create_dataloader(test_dataset, cfg.global_rank, cfg.world_size, cfg.global_train_batch_size)
      
 
      model = ComposerClassifier(module=ResNetCIFAR(), num_classes=10)
@@ -143,10 +133,13 @@ def main(cfg: MyConfig) -> Trainer:
             # Adds mosaicml logger to composer if the run was sent from Mosaic platform, access token is set, and mosaic logger wasn't previously added
             mosaicml_logger = MosaicMLLogger()
             loggers.append(mosaicml_logger)
-     databricks_logger = MLFlowLogger.MLFlowLogger(experiment_name=cfg.experiment_name, 
-                                                   tracking_uri='databricks', synchronous=False, log_system_metrics=True)
-     loggers.append(databricks_logger)
-    
+            
+     mlflow_logger_cfg = cfg.loggers["mlflow"]
+     if mlflow_logger_cfg is not None:
+        databricks_logger = MLFlowLogger.MLFlowLogger(
+            experiment_name=cfg.experiment_name, tracking_uri=mlflow_logger_cfg['tracking_uri'], 
+            synchronous=mlflow_logger_cfg['synchronous'], log_system_metrics=mlflow_logger_cfg['log_system_metrics'])
+        loggers.append(databricks_logger)
   
      train_epochs = "1ep" # Train for 3 epochs because we're assuming Colab environment and hardware
      device = "gpu" if torch.cuda.is_available() else "cpu" # select the device
@@ -154,7 +147,7 @@ def main(cfg: MyConfig) -> Trainer:
      trainer = composer.trainer.Trainer(
         model=model,
         train_dataloader=train_dataloader,
-        eval_dataloader=test_dataloader,
+        # eval_dataloader=test_dataloader,
         max_duration=train_epochs,
         optimizers=optimizer,
         schedulers=lr_scheduler,
@@ -170,8 +163,11 @@ def main(cfg: MyConfig) -> Trainer:
 
 import sys
 import json
-
+import yaml
+    
 if __name__ == '__main__':
-    json_str = sys.argv[1]
-    cfg = MyConfig(**json.loads(json_str))
+    # Load yaml and cli arguments.
+    with open(sys.argv[1], 'r') as f:
+        yaml_data = yaml.safe_load(f)
+    cfg = MyConfig(**yaml_data)
     main(cfg)
