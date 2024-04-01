@@ -2,7 +2,6 @@
 
 import time
 import time
-import warnings
 from typing import Any, Dict, List, Optional, Union
 
 import torch
@@ -17,7 +16,7 @@ import torch
 import torch.utils.data
 from dataclasses import dataclass
 import os
-
+from dataset.CIFAR10_dataset import CIFAR10Dataset
 import composer
 
 from torchvision import datasets, transforms
@@ -41,12 +40,19 @@ def create_dataloader(dataset, rank, world_size, batch_size):
     )
 
 class MyConfig:
-    def __init__(self, name: str, device_train_microbatch_size: int, seed: int = 42, loggers: List[any] = None) -> None:
+    def __init__(self, name: str, data: str, device_train_microbatch_size: int, seed: int = 42, loggers: List[any] = None) -> None:
         self.name = name
         self.device_train_microbatch_size = device_train_microbatch_size
         self.seed = seed
         self.loggers = loggers
         self.dist_timeout = 600.0
+        
+        # Hack. At the moment StreamDataset only supports mds format, dbfs:/Volumes/main/yu_gong/cifar10/train/
+        # are the same as main.yu_gong.cifar10_train just different format
+        if data == "main.yu_gong.cifar10_train":
+            self.data = "dbfs:/Volumes/main/yu_gong/cifar10/train/"
+        else:
+            self.data = data
     
     def dist_init(self):
         self.world_size = dist.get_world_size()
@@ -90,28 +96,33 @@ def main(cfg: MyConfig) -> Trainer:
      log.setLevel("INFO")
      log.info(f"world_size: {cfg.world_size}, global_rank: {cfg.global_rank}, global_train_batch_size: {cfg.device_train_microbatch_size}")
 
-     data_directory = "/tmp/data"
-
+     
      # Normalization constants
      mean = (0.507, 0.487, 0.441)
      std = (0.267, 0.256, 0.276)
      cifar10_transforms = transforms.Compose([transforms.ToTensor(), transforms.Normalize(mean, std)])
 
-     if cfg.local_rank == 0:
-          logging.info("Downloading CIFAR-10 dataset")
-          train_dataset = datasets.CIFAR10(data_directory, train=True, download=True, transform=cifar10_transforms)
-          test_dataset = datasets.CIFAR10(data_directory, train=False, download=True, transform=cifar10_transforms)
-     else:
-          wait_for_file(os.path.join(data_directory, "cifar-10-batches-py/batches.meta"))
-          train_dataset = datasets.CIFAR10(data_directory, train=True, download=False, transform=cifar10_transforms)
-          test_dataset = datasets.CIFAR10(data_directory, train=False, download=False, transform=cifar10_transforms)
-     
-
+    # data_directory = "/tmp/data"
+    #  if cfg.local_rank == 0:
+    #       logging.info("Downloading CIFAR-10 dataset")
+    #       train_dataset = datasets.CIFAR10(data_directory, train=True, download=True, transform=cifar10_transforms)
+    #       test_dataset = datasets.CIFAR10(data_directory, train=False, download=True, transform=cifar10_transforms)
+    #  else:
+    #       wait_for_file(os.path.join(data_directory, "cifar-10-batches-py/batches.meta"))
+    #       train_dataset = datasets.CIFAR10(data_directory, train=True, download=False, transform=cifar10_transforms)
+    #       test_dataset = datasets.CIFAR10(data_directory, train=False, download=False, transform=cifar10_transforms)
      # Our train and test dataloaders are PyTorch DataLoader objects!
-     train_dataloader = create_dataloader(train_dataset, cfg.global_rank, cfg.world_size, cfg.device_train_microbatch_size)
+     # train_dataloader = create_dataloader(train_dataset, cfg.global_rank, cfg.world_size, cfg.device_train_microbatch_size)
      # test dataloader is not used in this example, need to DEBUG why caused sigkill
-    #  test_dataloader = create_dataloader(test_dataset, cfg.global_rank, cfg.world_size, cfg.global_train_batch_size)
+     # test_dataloader = create_dataloader(test_dataset, cfg.global_rank, cfg.world_size, cfg.global_train_batch_size)
+ 
      
+     train_dataset = CIFAR10Dataset(remote=cfg.data, shuffle=True, 
+                                    batch_size=cfg.device_train_microbatch_size, 
+                                    transforms=cifar10_transforms)
+     train_dataloader = torch.utils.data.DataLoader(
+        train_dataset, batch_size=cfg.device_train_microbatch_size, drop_last=True)     
+
 
      model = ComposerClassifier(module=ResNetCIFAR(), num_classes=10)
 
